@@ -1,0 +1,2 @@
+from Fonctions import correction_commissions
+correction_commissions()
