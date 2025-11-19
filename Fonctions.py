@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 import pyodbc
 from dotenv import load_dotenv
 import os
@@ -24,32 +24,41 @@ def get_connection():
         print("Connexion échouée :", e)
         return None
 
-def get_dates():
-    aujourdhui = date.today()
-    debut_mois = date(aujourdhui.year, aujourdhui.month, 1)
 
-    if aujourdhui.month == 12:
-      mois_suivant = 1
-      annee_suivante = aujourdhui.year + 1
-    else:
-        mois_suivant = aujourdhui.month + 1
-        annee_suivante = aujourdhui.year
-    fin_mois = date(annee_suivante, mois_suivant, 1)
-    return debut_mois, fin_mois
+   
 
+def dates_manquantes(cursor):
+    today = date.today() 
+    last_30_days = [today - timedelta(days=i) for i in range(30, -1, -1)]
+    
+  
+    cursor.execute("SELECT CAST(date_jour AS date) FROM verifi")
+    dates_verifi = [row[0] for row in cursor.fetchall()]
+    
+    dates_a_traiter = [d for d in last_30_days if d not in dates_verifi or d==today]
+    
+    dates_a_traiter_str = [d.strftime("%Y-%m-%d") for d in dates_a_traiter]
+    
+    return dates_a_traiter_str
+
+
+    
 def correction_commissions():
     connexion = get_connection()
     if not connexion:
         return
 
     cursor = connexion.cursor()
-    debut_mois, fin_mois = get_dates()
-    print(f"Traitement de : {debut_mois} à {fin_mois}")
+    liste_dates = dates_manquantes(cursor)
+    
+    dates_sql = ",".join(f"'{d}'" for d in liste_dates)
+    print(f"Traitement de : {liste_dates} ")
 
     # ---  pour les contrats avant 2023 ---
     def comm_avant():
-      
-        query_affiche = """
+        dates_sql = ",".join(f"'{d}'" for d in liste_dates)
+
+        query_affiche = f"""
             DECLARE 
                 @NUMERO_QUITTANCE varchar(50),
                 @NUM_MOUVEMENT int;
@@ -57,7 +66,7 @@ def correction_commissions():
             DECLARE corr_quitt CURSOR FOR   
             SELECT NUMERO_QUITTANCE, NUM_MOUVEMENT
             FROM reglement
-            WHERE DATE_VALIDATION BETWEEN ? AND ?;
+            WHERE cast(DATE_VALIDATION as date) in ({dates_sql});
 
             OPEN corr_quitt;  
             FETCH NEXT FROM corr_quitt INTO @NUMERO_QUITTANCE, @NUM_MOUVEMENT;
@@ -97,7 +106,8 @@ def correction_commissions():
             DEALLOCATE corr_quitt;
         """
 
-        cursor.execute(query_affiche, debut_mois, fin_mois)
+        
+        cursor.execute(query_affiche)
         print("Mise à jour préliminaire terminée.")
 
         query = f"""
@@ -122,7 +132,7 @@ def correction_commissions():
             and R.VALIDE = 2  
             and R.ETAT_MVT = 1   and R.COMMISSION_MVT <> 0
             and  year(DATE_EFFET_POLICE) < 2023
-            and cast(DATE_MVT as date) between '{debut_mois}' and '{fin_mois}'
+            and cast(R.DATEEXPORT as date) in ({dates_sql})
             and R.CODE_AGENCE not like '6%' 
             and r.code_agence not like '2%' and r.CODE_AGENCE not in (1,516, 116)
         """
@@ -157,6 +167,7 @@ def correction_commissions():
 
     # ---  pour les contrats à partir de 2023 ---
     def comm_apr():
+        dates_sql = ",".join(f"'{d}'" for d in liste_dates)
         query = f"""
             select distinct convert(varchar,R.DATE_VALIDATION,103) as DATE,
             R.RECU, code_annulation, convert(varchar,R.DATE_VALIDATION,103) AS DATE_MVT , C.CODE_BRANCHE , a.taux_retenue,
@@ -164,7 +175,7 @@ def correction_commissions():
             R.NUMERO_POLICE, c.DATE_EFFET_POLICE, LIBELLE_SOUS_BRANCHE,
             R.NUMERO_QUITTANCE , R.TERME_COMPTANT, R.ETAT_MVT , 
             Q.PRIME_TOTAL, R.PRIME_ENCAISSEE, r.COMMISSION_MVT,  
-            COMMISSION,(DATEDIFF(month,c.DATE_EFFET_POLICE, R.DATE_MVT_DU)+1) as "NB MOIS", a.FAX,
+            COMMISSION,(DATEDIFF(month,c.DATE_EFFET_POLICE, R.DATE_MVT_DU)+1) as "NB_MOIS", a.FAX,
             (select VALEUR_CARACT from vue_MVT_CARACTERISTIQUE where numero_police=c.NUMERO_POLICE and CODE_CARACTERISTIQUE=21) as DUREE
             from VUE_REGLEMENT_NEW_3 R  
             inner join  QUITTANCIER Q ON Q.NUMERO_QUITTANCE = R.NUMERO_QUITTANCE  
@@ -179,7 +190,7 @@ def correction_commissions():
             and R.VALIDE = 2  
             and R.ETAT_MVT = 1   and R.COMMISSION_MVT <> 0
             and  year(DATE_EFFET_POLICE) >= 2023
-            and cast(DATE_MVT as date) between '{debut_mois}' and '{fin_mois}'
+            and cast(R.DATEEXPORT as date) in ({dates_sql})
             and R.CODE_AGENCE not like '6%' 
             and r.code_agence not like '2%' and r.CODE_AGENCE not in (1,516, 116)
         """
@@ -219,10 +230,9 @@ def correction_commissions():
    
     comm_avant()
     comm_apr()
+    dates_a_inserer = [(d,) for d in liste_dates]  
+    cursor.executemany("INSERT INTO verifi(date_jour) VALUES (?)", dates_a_inserer)
     connexion.commit()
     connexion.close()
     print("Toutes les commissions ont été mises à jour !")
 
-
-if __name__ == "__Fonctions__":
-    correction_commissions()
