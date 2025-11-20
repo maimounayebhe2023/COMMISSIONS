@@ -1,4 +1,4 @@
-from datetime import date, timedelta
+from datetime import date, timedelta,datetime
 import pyodbc
 from dotenv import load_dotenv
 import os
@@ -32,7 +32,7 @@ def dates_manquantes(cursor):
     last_30_days = [today - timedelta(days=i) for i in range(30, -1, -1)]
     
   
-    cursor.execute("SELECT CAST(date_jour AS date) FROM verifi")
+    cursor.execute("SELECT CAST(date_execution AS date) FROM SUIVI_CORRECTION")
     dates_verifi = [row[0] for row in cursor.fetchall()]
     
     dates_a_traiter = [d for d in last_30_days if d not in dates_verifi or d==today]
@@ -50,8 +50,19 @@ def correction_commissions():
 
     cursor = connexion.cursor()
     liste_dates = dates_manquantes(cursor)
-    
+    dates_a_inserer = [(datetime.fromisoformat(d),) for d in liste_dates]
+    cursor.executemany("INSERT INTO SUIVI_CORRECTION(date_execution) VALUES (?)", dates_a_inserer)
+    connexion.commit()
     dates_sql = ",".join(f"'{d}'" for d in liste_dates)
+    cursor.execute(f"""
+        SELECT id, CAST(date_execution AS date) 
+        FROM SUIVI_CORRECTION 
+        WHERE CAST(date_execution AS date) IN ({dates_sql})
+    """)
+    suivi_map = {row[1]: row[0] for row in cursor.fetchall()} 
+    date_execution = datetime.now().date()
+    suivi_id = suivi_map.get(date_execution)
+
     print(f"Traitement de : {liste_dates} ")
 
     # ---  pour les contrats avant 2023 ---
@@ -139,7 +150,10 @@ def correction_commissions():
         cursor.execute(query)
         rows = cursor.fetchall()
         print(f"CONTRATS AVANT 2023 :   {len(rows)} quittances trouvées.")
+
+        
         for row in rows:
+            commission_avant=float(row.COMMISSION_MVT )
             prime_totale = float(row.PRIME_TOTAL)
             prime_apres_taxe = prime_totale / 1.02
             NB_MOIS = row.NB_MOIS
@@ -151,6 +165,19 @@ def correction_commissions():
                 commission = prime_apres_taxe * 0.10
             else:
                 commission = 0
+                
+            cursor.execute("""
+            INSERT INTO details_correc_com
+            (id_Correction, code_agence, numero_quittance, comm_avant, comm_apres)
+                VALUES (?,?, ?, ?, ?)
+            """,
+            (   
+                suivi_id,
+                row.CODE_AGENCE,
+                row.NUMERO_QUITTANCE,
+                commission_avant,
+                commission
+            ))
             cursor.execute(f"""
             UPDATE REGLEMENT
             SET COMMISSION_MVT = {commission}
@@ -198,6 +225,7 @@ def correction_commissions():
         rows = cursor.fetchall()
         print(f"CONTRATS A PARTIR DE 2023:  {len(rows)} quittances trouvées.")
         for row in rows:
+            commission_avant=float(row.COMMISSION_MVT )
             NB_MOIS = int(row.NB_MOIS)
             DUREE = int(row.DUREE or 0)
             prime_totale = float(row.PRIME_TOTAL)
@@ -214,6 +242,18 @@ def correction_commissions():
                 commission = prime_apres_taxe * 0.10
             else:
                 commission = 0
+            cursor.execute("""
+            INSERT INTO details_correc_com
+            (id_Correction, code_agence, numero_quittance, comm_avant, comm_apres)
+                VALUES (?, ?, ?, ?, ?)
+            """,
+            (   
+                suivi_id,
+                row.CODE_AGENCE,
+                row.NUMERO_QUITTANCE,
+                commission_avant,
+                commission
+            ))
             cursor.execute(f"""
             UPDATE REGLEMENT
             SET COMMISSION_MVT = {commission}
@@ -230,8 +270,7 @@ def correction_commissions():
    
     comm_avant()
     comm_apr()
-    dates_a_inserer = [(d,) for d in liste_dates]  
-    cursor.executemany("INSERT INTO verifi(date_jour) VALUES (?)", dates_a_inserer)
+
     connexion.commit()
     connexion.close()
     print("Toutes les commissions ont été mises à jour !")
