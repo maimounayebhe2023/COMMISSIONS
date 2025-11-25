@@ -36,7 +36,7 @@ def dates_manquantes(cursor):
     dates_existantes = {r[0].date() if not isinstance(r[0], date) else r[0] for r in rows if r[0] is not None}
 
     # Ne garder que les dates qui n'existent pas encore
-    dates_a_inserer = [d for d in last_30_days if d not in dates_existantes]
+    dates_a_inserer = [d for d in last_30_days if d not in dates_existantes or d==today]
     return dates_a_inserer
 
 # Fonction pour traitement des commissions
