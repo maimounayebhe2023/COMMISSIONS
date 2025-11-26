@@ -75,7 +75,45 @@ def correction_commissions():
                     "UPDATE SUIVI_CORRECTION SET statut = 'encours' WHERE id = ?",
                     (suivi_id,)
                 )
+            cursor.execute("""
+                DECLARE 
+                @NUMERO_QUITTANCE varchar(50),
+                @NUM_MOUVEMENT int, 
+                @message varchar(80);  
+                DECLARE corr_quitt CURSOR FOR   
+                select NUMERO_QUITTANCE, NUM_MOUVEMENT
+                from reglement r
+                where CAST(R.DATEEXPORT AS DATE) = ?
 
+                OPEN corr_quitt;  
+                
+                FETCH NEXT FROM corr_quitt   INTO @NUMERO_QUITTANCE, @NUM_MOUVEMENT ;
+                
+                WHILE @@FETCH_STATUS = 0  
+                BEGIN  
+
+                    UPDATE REGLEMENT
+                    SET COMMISSION_MVT = 
+                    (select COMMISSION_AGENCE from QUITTANCIER as Q where NUMERO_QUITTANCE = reglement.NUMERO_QUITTANCE)
+                    where NUMERO_QUITTANCE = @NUMERO_QUITTANCE AND NUM_MOUVEMENT = @NUM_MOUVEMENT  --AND COMMISSION_MVT = 0       --DATE_MVT >= '16/04/2015'
+                    AND ABS((select SUM(PRIME_TOTAL) from QUITTANCIER as Q where NUMERO_QUITTANCE = reglement.NUMERO_QUITTANCE ) - 
+                    (select SUM(PRIME_ENCAISSEE) from REGLEMENT as R where NUMERO_QUITTANCE = reglement.NUMERO_QUITTANCE 
+                    and isnull(CODE_ANNULATION,'N') <> 'O' and NUM_MOUVEMENT <= reglement.NUM_MOUVEMENT)) < 1
+                    
+                    UPDATE REGLEMENT
+                    SET ETAT_MVT = 1
+                    where NUMERO_QUITTANCE = @NUMERO_QUITTANCE AND NUM_MOUVEMENT = @NUM_MOUVEMENT  --AND COMMISSION_MVT = 0       --DATE_MVT >= '16/04/2015'
+                    AND ABS((select SUM(PRIME_TOTAL) from QUITTANCIER as Q where NUMERO_QUITTANCE = reglement.NUMERO_QUITTANCE ) - 
+                    (select SUM(PRIME_ENCAISSEE) from REGLEMENT as R where NUMERO_QUITTANCE = reglement.NUMERO_QUITTANCE 
+                    and isnull(CODE_ANNULATION,'N') <> 'O' and NUM_MOUVEMENT <= reglement.NUM_MOUVEMENT)) < 1
+
+                    
+                    FETCH NEXT FROM corr_quitt  INTO @NUMERO_QUITTANCE, @NUM_MOUVEMENT;
+
+                END   
+                CLOSE corr_quitt;
+                DEALLOCATE corr_quitt; 
+            """, (d,))
             # --- Contrats avant 2023 ---
             cursor.execute("""
                 SELECT DISTINCT CONVERT(varchar,R.DATE_VALIDATION,103) AS DATE,
